@@ -1,0 +1,333 @@
+import os
+import pandas as pd
+import mne
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional
+import json
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class ECGFileLoader:
+    """
+    A class to load ECG files with corresponding EEG annotations.
+    
+    This loader maps EEG seizure annotations to ECG data, allowing analysis
+    of cardiac patterns during seizure events.
+    """
+    
+    def __init__(self, base_path: str = "/Volumes/Seizury/ds005873"):
+        """
+        Initialize the ECG file loader.
+        
+        Args:
+            base_path (str): Base path to the dataset directory
+        """
+        self.base_path = Path(base_path)
+        self.patients_data = {}
+        
+    def get_patient_list(self) -> List[str]:
+        """
+        Get list of all available patients in the dataset.
+        
+        Returns:
+            List[str]: List of patient IDs (e.g., ['sub-001', 'sub-002', ...])
+        """
+        patient_dirs = []
+        if self.base_path.exists():
+            for item in self.base_path.iterdir():
+                if item.is_dir() and item.name.startswith('sub-'):
+                    patient_dirs.append(item.name)
+        return sorted(patient_dirs)
+    
+    def get_patient_runs(self, patient_id: str) -> Dict[str, List[str]]:
+        """
+        Get all runs for a specific patient.
+        
+        Args:
+            patient_id (str): Patient ID (e.g., 'sub-001')
+            
+        Returns:
+            Dict[str, List[str]]: Dictionary with 'ecg' and 'eeg' keys containing run files
+        """
+        patient_path = self.base_path / patient_id / "ses-01"
+        runs = {'ecg': [], 'eeg': [], 'annotations': []}
+        
+        # Get ECG files
+        ecg_path = patient_path / "ecg"
+        if ecg_path.exists():
+            for file in ecg_path.glob("*.edf"):
+                runs['ecg'].append(str(file))
+        
+        # Get EEG files and annotations
+        eeg_path = patient_path / "eeg"
+        if eeg_path.exists():
+            for file in eeg_path.glob("*.edf"):
+                runs['eeg'].append(str(file))
+            for file in eeg_path.glob("*events.tsv"):
+                runs['annotations'].append(str(file))
+                
+        return runs
+    
+    def load_eeg_annotations(self, annotation_file: str) -> pd.DataFrame:
+        """
+        Load EEG annotations from TSV file.
+        
+        Args:
+            annotation_file (str): Path to the TSV annotation file
+            
+        Returns:
+            pd.DataFrame: DataFrame with annotation data (onset, duration, trial_type, etc.)
+        """
+        try:
+            annotations_df = pd.read_csv(annotation_file, sep='\t')
+            logger.info(f"Loaded annotations from {annotation_file}")
+            logger.info(f"Columns: {annotations_df.columns.tolist()}")
+            logger.info(f"Number of annotations: {len(annotations_df)}")
+            return annotations_df
+        except Exception as e:
+            logger.error(f"Error loading annotations from {annotation_file}: {e}")
+            return pd.DataFrame()
+    
+    def load_ecg_data(self, ecg_file: str) -> Optional[mne.io.Raw]:
+        """
+        Load ECG data from EDF file.
+        
+        Args:
+            ecg_file (str): Path to the ECG EDF file
+            
+        Returns:
+            Optional[mne.io.Raw]: MNE Raw object containing ECG data, None if error
+        """
+        try:
+            raw_ecg = mne.io.read_raw_edf(ecg_file, preload=True, verbose=False)
+            logger.info(f"Loaded ECG data from {ecg_file}")
+            logger.info(f"ECG channels: {raw_ecg.ch_names}")
+            logger.info(f"Sampling frequency: {raw_ecg.info['sfreq']} Hz")
+            logger.info(f"Duration: {raw_ecg.times[-1]:.2f} seconds")
+            return raw_ecg
+        except Exception as e:
+            logger.error(f"Error loading ECG data from {ecg_file}: {e}")
+            return None
+    
+    def load_eeg_data(self, eeg_file: str) -> Optional[mne.io.Raw]:
+        """
+        Load EEG data from EDF file.
+        
+        Args:
+            eeg_file (str): Path to the EEG EDF file
+            
+        Returns:
+            Optional[mne.io.Raw]: MNE Raw object containing EEG data, None if error
+        """
+        try:
+            raw_eeg = mne.io.read_raw_edf(eeg_file, preload=True, verbose=False)
+            logger.info(f"Loaded EEG data from {eeg_file}")
+            return raw_eeg
+        except Exception as e:
+            logger.error(f"Error loading EEG data from {eeg_file}: {e}")
+            return None
+    
+    def match_ecg_eeg_runs(self, patient_id: str) -> List[Dict]:
+        """
+        Match ECG and EEG files for the same runs and load their data with annotations.
+        
+        Args:
+            patient_id (str): Patient ID (e.g., 'sub-001')
+            
+        Returns:
+            List[Dict]: List of dictionaries containing matched ECG/EEG data and annotations
+        """
+        runs = self.get_patient_runs(patient_id)
+        matched_data = []
+        
+        # Extract run numbers from filenames
+        ecg_runs = {}
+        eeg_runs = {}
+        annotation_runs = {}
+        
+        # Parse ECG files
+        for ecg_file in runs['ecg']:
+            filename = Path(ecg_file).name
+            if 'run-' in filename:
+                run_num = filename.split('run-')[1].split('_')[0]
+                ecg_runs[run_num] = ecg_file
+        
+        # Parse EEG files
+        for eeg_file in runs['eeg']:
+            filename = Path(eeg_file).name
+            if 'run-' in filename:
+                run_num = filename.split('run-')[1].split('_')[0]
+                eeg_runs[run_num] = eeg_file
+        
+        # Parse annotation files
+        for ann_file in runs['annotations']:
+            filename = Path(ann_file).name
+            if 'run-' in filename:
+                run_num = filename.split('run-')[1].split('_')[0]
+                annotation_runs[run_num] = ann_file
+        
+        # Match runs and load data
+        for run_num in sorted(set(ecg_runs.keys()) & set(eeg_runs.keys())):
+            logger.info(f"Processing {patient_id} run {run_num}")
+            
+            # Load ECG data
+            ecg_data = self.load_ecg_data(ecg_runs[run_num])
+            
+            # Load EEG data (for reference/validation)
+            eeg_data = self.load_eeg_data(eeg_runs[run_num])
+            
+            # Load annotations if available
+            annotations = pd.DataFrame()
+            if run_num in annotation_runs:
+                annotations = self.load_eeg_annotations(annotation_runs[run_num])
+            
+            # Create matched data entry
+            matched_entry = {
+                'patient_id': patient_id,
+                'run_number': run_num,
+                'ecg_file': ecg_runs[run_num],
+                'eeg_file': eeg_runs[run_num],
+                'annotation_file': annotation_runs.get(run_num, None),
+                'ecg_data': ecg_data,
+                'eeg_data': eeg_data,
+                'annotations': annotations,
+                'seizure_events': self._extract_seizure_events(annotations) if not annotations.empty else []
+            }
+            
+            matched_data.append(matched_entry)
+        
+        return matched_data
+    
+    def _extract_seizure_events(self, annotations_df: pd.DataFrame) -> List[Dict]:
+        """
+        Extract seizure events from annotations DataFrame.
+        
+        Args:
+            annotations_df (pd.DataFrame): DataFrame with annotations
+            
+        Returns:
+            List[Dict]: List of seizure events with onset, duration, and type
+        """
+        seizure_events = []
+        
+        if annotations_df.empty:
+            return seizure_events
+        
+        # Look for seizure-related annotations
+        # Common seizure markers in BIDS format
+        seizure_markers = ['seizure', 'sz', 'ictal', 'focal', 'generalized', 'tonic', 'clonic']
+        
+        for idx, row in annotations_df.iterrows():
+            # Check if this annotation indicates a seizure
+            trial_type = str(row.get('trial_type', '')).lower()
+            description = str(row.get('description', '')).lower()
+            
+            is_seizure = any(marker in trial_type or marker in description 
+                           for marker in seizure_markers)
+            
+            if is_seizure:
+                event = {
+                    'onset_time': row.get('onset', 0),
+                    'duration': row.get('duration', 0),
+                    'trial_type': row.get('trial_type', ''),
+                    'description': row.get('description', ''),
+                    'value': row.get('value', '')
+                }
+                seizure_events.append(event)
+        
+        return seizure_events
+    
+    def load_all_patients(self) -> Dict[str, List[Dict]]:
+        """
+        Load data for all patients in the dataset.
+        
+        Returns:
+            Dict[str, List[Dict]]: Dictionary with patient IDs as keys and their matched data as values
+        """
+        all_patients_data = {}
+        patients = self.get_patient_list()
+        
+        logger.info(f"Found {len(patients)} patients: {patients}")
+        
+        for patient_id in patients:
+            logger.info(f"Loading data for {patient_id}")
+            patient_data = self.match_ecg_eeg_runs(patient_id)
+            all_patients_data[patient_id] = patient_data
+            
+        return all_patients_data
+    
+    def get_ecg_with_annotations(self, patient_id: str, run_number: str = None) -> List[Dict]:
+        """
+        Get ECG data with mapped EEG annotations for a specific patient.
+        
+        Args:
+            patient_id (str): Patient ID (e.g., 'sub-001')
+            run_number (str, optional): Specific run number. If None, returns all runs.
+            
+        Returns:
+            List[Dict]: ECG data with annotations
+        """
+        patient_data = self.match_ecg_eeg_runs(patient_id)
+        
+        if run_number:
+            return [data for data in patient_data if data['run_number'] == run_number]
+        
+        return patient_data
+    
+    def save_processed_data(self, output_dir: str, patient_data: Dict[str, List[Dict]]):
+        """
+        Save processed data to files for later use.
+        
+        Args:
+            output_dir (str): Directory to save processed data
+            patient_data (Dict): Processed patient data
+        """
+        output_path = Path(output_dir)
+        output_path.mkdir(exist_ok=True)
+        
+        for patient_id, runs_data in patient_data.items():
+            patient_dir = output_path / patient_id
+            patient_dir.mkdir(exist_ok=True)
+            
+            for run_data in runs_data:
+                run_info = {
+                    'patient_id': run_data['patient_id'],
+                    'run_number': run_data['run_number'],
+                    'ecg_file': run_data['ecg_file'],
+                    'eeg_file': run_data['eeg_file'],
+                    'annotation_file': run_data['annotation_file'],
+                    'seizure_events': run_data['seizure_events']
+                }
+                
+                # Save run info as JSON
+                run_file = patient_dir / f"run_{run_data['run_number']}_info.json"
+                with open(run_file, 'w') as f:
+                    json.dump(run_info, f, indent=2)
+                
+                # Save annotations as CSV if available
+                if not run_data['annotations'].empty:
+                    ann_file = patient_dir / f"run_{run_data['run_number']}_annotations.csv"
+                    run_data['annotations'].to_csv(ann_file, index=False)
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize the loader
+    loader = ECGFileLoader()
+    
+    # Get list of patients
+    patients = loader.get_patient_list()
+    print(f"Available patients: {patients}")
+    
+    # Load data for a specific patient
+    if patients:
+        patient_id = patients[0]  # Use first patient as example
+        ecg_with_annotations = loader.get_ecg_with_annotations(patient_id)
+        
+        print(f"\nData for {patient_id}:")
+        for run_data in ecg_with_annotations:
+            print(f"Run {run_data['run_number']}: {len(run_data['seizure_events'])} seizure events")
+            for event in run_data['seizure_events']:
+                print(f"  - {event['trial_type']} at {event['onset_time']}s for {event['duration']}s")
