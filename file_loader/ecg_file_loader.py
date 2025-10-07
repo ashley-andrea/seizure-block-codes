@@ -204,40 +204,38 @@ class ECGFileLoader:
     def _extract_seizure_events(self, annotations_df: pd.DataFrame) -> List[Dict]:
         """
         Extract seizure events from annotations DataFrame.
-        
+        This version is adapted for OpenNeuro datasets where the seizure event column is 'eventType'.
         Args:
             annotations_df (pd.DataFrame): DataFrame with annotations
-            
         Returns:
             List[Dict]: List of seizure events with onset, duration, and type
         """
         seizure_events = []
-        
         if annotations_df.empty:
             return seizure_events
-        
-        # Look for seizure-related annotations
-        # Common seizure markers in BIDS format
+        # Accept both 'eventType' and 'trial_type' columns for seizure detection
+        event_col = None
+        for col in ['eventType', 'trial_type']:
+            if col in annotations_df.columns:
+                event_col = col
+                break
+        if event_col is None:
+            return seizure_events
+        # Look for seizure-related markers in the event column
         seizure_markers = ['seizure', 'sz', 'ictal', 'focal', 'generalized', 'tonic', 'clonic']
-        
-        for idx, row in annotations_df.iterrows():
-            # Check if this annotation indicates a seizure
-            trial_type = str(row.get('trial_type', '')).lower()
-            description = str(row.get('description', '')).lower()
-            
-            is_seizure = any(marker in trial_type or marker in description 
-                           for marker in seizure_markers)
-            
+        for _, row in annotations_df.iterrows():
+            event_type = str(row.get(event_col, '')).lower()
+            is_seizure = any(marker in event_type for marker in seizure_markers)
             if is_seizure:
                 event = {
-                    'onset_time': row.get('onset', 0),
-                    'duration': row.get('duration', 0),
-                    'trial_type': row.get('trial_type', ''),
-                    'description': row.get('description', ''),
-                    'value': row.get('value', '')
+                    'onset_time': float(row.get('onset', 0)),
+                    'duration': float(row.get('duration', 0)),
+                    'type': row.get(event_col, ''),
+                    'lateralization': row.get('lateralization', None),
+                    'localization': row.get('localization', None),
+                    'vigilance': row.get('vigilance', None),
                 }
                 seizure_events.append(event)
-        
         return seizure_events
     
     def load_all_patients(self) -> Dict[str, List[Dict]]:
