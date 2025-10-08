@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import json
 import logging
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
+import tempfile
+from urllib.parse import urlparse
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -18,15 +22,48 @@ class ECGFileLoader:
     of cardiac patterns during seizure events.
     """
     
-    def __init__(self, base_path: str = "/Volumes/Seizury/ds005873"):
+    def __init__(self, base_path: str = "/Volumes/Seizury/ds005873", use_s3: bool = False):
         """
         Initialize the ECG file loader.
         
         Args:
-            base_path (str): Base path to the dataset directory
+            base_path (str): Base path to the dataset directory or S3 bucket path
+            use_s3 (bool): If True, use S3 storage; if False, use local storage
         """
-        self.base_path = Path(base_path)
+        self.use_s3 = use_s3
+        if use_s3:
+            self.base_path = "s3://seizury-data/ds005873"
+            self.s3_client = boto3.client('s3')
+            parsed = urlparse(self.base_path)
+            self.bucket_name = parsed.netloc
+            self.s3_prefix = parsed.path.lstrip('/')
+        else:
+            self.base_path = Path(base_path)
+            self.s3_client = None
+            self.bucket_name = None
+            self.s3_prefix = None
         self.patients_data = {}
+    
+    def _list_s3_objects(self, prefix: str) -> List[str]:
+        """List objects in S3 with given prefix."""
+        try:
+            response = self.s3_client.list_objects_v2(Bucket=self.bucket_name, Prefix=prefix)
+            return [obj['Key'] for obj in response.get('Contents', [])]
+        except Exception as e:
+            logger.error(f"Error listing S3 objects: {e}")
+            return []
+    
+    def _download_s3_file(self, s3_key: str) -> str:
+        """Download S3 file to temporary location and return local path."""
+        try:
+            # Create temporary file
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(s3_key)[1])
+            self.s3_client.download_fileobj(self.bucket_name, s3_key, temp_file)
+            temp_file.close()
+            return temp_file.name
+        except Exception as e:
+            logger.error(f"Error downloading S3 file {s3_key}: {e}")
+            return None
         
     def get_patient_list(self) -> List[str]:
         """
@@ -36,10 +73,25 @@ class ECGFileLoader:
             List[str]: List of patient IDs (e.g., ['sub-001', 'sub-002', ...])
         """
         patient_dirs = []
-        if self.base_path.exists():
-            for item in self.base_path.iterdir():
-                if item.is_dir() and item.name.startswith('sub-'):
-                    patient_dirs.append(item.name)
+        
+        if self.use_s3:
+            # List S3 objects with the dataset prefix
+            objects = self._list_s3_objects(self.s3_prefix + '/')
+            # Extract patient IDs from S3 keys
+            for obj_key in objects:
+                # Format: ds005873/sub-XXX/ses-01/...
+                parts = obj_key.split('/')
+                if len(parts) >= 2:
+                    patient_part = parts[1]  # sub-XXX
+                    if patient_part.startswith('sub-') and patient_part not in patient_dirs:
+                        patient_dirs.append(patient_part)
+        else:
+            # Local file system
+            if self.base_path.exists():
+                for item in self.base_path.iterdir():
+                    if item.is_dir() and item.name.startswith('sub-'):
+                        patient_dirs.append(item.name)
+        
         return sorted(patient_dirs)
     
     def get_patient_runs(self, patient_id: str) -> Dict[str, List[str]]:
@@ -52,22 +104,40 @@ class ECGFileLoader:
         Returns:
             Dict[str, List[str]]: Dictionary with 'ecg' and 'eeg' keys containing run files
         """
-        patient_path = self.base_path / patient_id / "ses-01"
         runs = {'ecg': [], 'eeg': [], 'annotations': []}
         
-        # Get ECG files
-        ecg_path = patient_path / "ecg"
-        if ecg_path.exists():
-            for file in ecg_path.glob("*.edf"):
-                runs['ecg'].append(str(file))
-        
-        # Get EEG files and annotations
-        eeg_path = patient_path / "eeg"
-        if eeg_path.exists():
-            for file in eeg_path.glob("*.edf"):
-                runs['eeg'].append(str(file))
-            for file in eeg_path.glob("*events.tsv"):
-                runs['annotations'].append(str(file))
+        if self.use_s3:
+            # S3 paths
+            ecg_prefix = f"{self.s3_prefix}/{patient_id}/ses-01/ecg/"
+            eeg_prefix = f"{self.s3_prefix}/{patient_id}/ses-01/eeg/"
+            
+            # Get all objects for this patient
+            patient_objects = self._list_s3_objects(f"{self.s3_prefix}/{patient_id}/")
+            
+            for obj_key in patient_objects:
+                if '/ecg/' in obj_key and obj_key.endswith('.edf'):
+                    runs['ecg'].append(f"s3://{self.bucket_name}/{obj_key}")
+                elif '/eeg/' in obj_key and obj_key.endswith('.edf'):
+                    runs['eeg'].append(f"s3://{self.bucket_name}/{obj_key}")
+                elif '/eeg/' in obj_key and obj_key.endswith('events.tsv'):
+                    runs['annotations'].append(f"s3://{self.bucket_name}/{obj_key}")
+        else:
+            # Local file system
+            patient_path = self.base_path / patient_id / "ses-01"
+            
+            # Get ECG files
+            ecg_path = patient_path / "ecg"
+            if ecg_path.exists():
+                for file in ecg_path.glob("*.edf"):
+                    runs['ecg'].append(str(file))
+            
+            # Get EEG files and annotations
+            eeg_path = patient_path / "eeg"
+            if eeg_path.exists():
+                for file in eeg_path.glob("*.edf"):
+                    runs['eeg'].append(str(file))
+                for file in eeg_path.glob("*events.tsv"):
+                    runs['annotations'].append(str(file))
                 
         return runs
     
@@ -76,13 +146,25 @@ class ECGFileLoader:
         Load EEG annotations from TSV file.
         
         Args:
-            annotation_file (str): Path to the TSV annotation file
+            annotation_file (str): Path to the TSV annotation file (local or S3)
             
         Returns:
             pd.DataFrame: DataFrame with annotation data (onset, duration, trial_type, etc.)
         """
         try:
-            annotations_df = pd.read_csv(annotation_file, sep='\t')
+            if self.use_s3 and annotation_file.startswith('s3://'):
+                # Download S3 file to temp location
+                parsed = urlparse(annotation_file)
+                s3_key = parsed.path.lstrip('/')
+                temp_file = self._download_s3_file(s3_key)
+                if temp_file is None:
+                    return pd.DataFrame()
+                annotations_df = pd.read_csv(temp_file, sep='\t')
+                # Clean up temp file
+                os.unlink(temp_file)
+            else:
+                annotations_df = pd.read_csv(annotation_file, sep='\t')
+            
             #logger.info(f"Loaded annotations from {annotation_file}")
             #logger.info(f"Columns: {annotations_df.columns.tolist()}")
             #logger.info(f"Number of annotations: {len(annotations_df)}")
@@ -96,13 +178,25 @@ class ECGFileLoader:
         Load ECG data from EDF file.
         
         Args:
-            ecg_file (str): Path to the ECG EDF file
+            ecg_file (str): Path to the ECG EDF file (local or S3)
             
         Returns:
             Optional[mne.io.Raw]: MNE Raw object containing ECG data, None if error
         """
         try:
-            raw_ecg = mne.io.read_raw_edf(ecg_file, preload=True, verbose=False)
+            if self.use_s3 and ecg_file.startswith('s3://'):
+                # Download S3 file to temp location
+                parsed = urlparse(ecg_file)
+                s3_key = parsed.path.lstrip('/')
+                temp_file = self._download_s3_file(s3_key)
+                if temp_file is None:
+                    return None
+                raw_ecg = mne.io.read_raw_edf(temp_file, preload=True, verbose=False)
+                # Clean up temp file
+                os.unlink(temp_file)
+            else:
+                raw_ecg = mne.io.read_raw_edf(ecg_file, preload=True, verbose=False)
+            
             #logger.info(f"Loaded ECG data from {ecg_file}")
             #logger.info(f"ECG channels: {raw_ecg.ch_names}")
             #logger.info(f"Sampling frequency: {raw_ecg.info['sfreq']} Hz")
@@ -117,13 +211,25 @@ class ECGFileLoader:
         Load EEG data from EDF file.
         
         Args:
-            eeg_file (str): Path to the EEG EDF file
+            eeg_file (str): Path to the EEG EDF file (local or S3)
             
         Returns:
             Optional[mne.io.Raw]: MNE Raw object containing EEG data, None if error
         """
         try:
-            raw_eeg = mne.io.read_raw_edf(eeg_file, preload=True, verbose=False)
+            if self.use_s3 and eeg_file.startswith('s3://'):
+                # Download S3 file to temp location
+                parsed = urlparse(eeg_file)
+                s3_key = parsed.path.lstrip('/')
+                temp_file = self._download_s3_file(s3_key)
+                if temp_file is None:
+                    return None
+                raw_eeg = mne.io.read_raw_edf(temp_file, preload=True, verbose=False)
+                # Clean up temp file
+                os.unlink(temp_file)
+            else:
+                raw_eeg = mne.io.read_raw_edf(eeg_file, preload=True, verbose=False)
+            
             #logger.info(f"Loaded EEG data from {eeg_file}")
             return raw_eeg
         except Exception as e:
