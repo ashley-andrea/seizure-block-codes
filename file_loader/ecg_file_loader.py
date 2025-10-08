@@ -83,9 +83,9 @@ class ECGFileLoader:
         """
         try:
             annotations_df = pd.read_csv(annotation_file, sep='\t')
-            logger.info(f"Loaded annotations from {annotation_file}")
-            logger.info(f"Columns: {annotations_df.columns.tolist()}")
-            logger.info(f"Number of annotations: {len(annotations_df)}")
+            #logger.info(f"Loaded annotations from {annotation_file}")
+            #logger.info(f"Columns: {annotations_df.columns.tolist()}")
+            #logger.info(f"Number of annotations: {len(annotations_df)}")
             return annotations_df
         except Exception as e:
             logger.error(f"Error loading annotations from {annotation_file}: {e}")
@@ -103,10 +103,10 @@ class ECGFileLoader:
         """
         try:
             raw_ecg = mne.io.read_raw_edf(ecg_file, preload=True, verbose=False)
-            logger.info(f"Loaded ECG data from {ecg_file}")
-            logger.info(f"ECG channels: {raw_ecg.ch_names}")
-            logger.info(f"Sampling frequency: {raw_ecg.info['sfreq']} Hz")
-            logger.info(f"Duration: {raw_ecg.times[-1]:.2f} seconds")
+            #logger.info(f"Loaded ECG data from {ecg_file}")
+            #logger.info(f"ECG channels: {raw_ecg.ch_names}")
+            #logger.info(f"Sampling frequency: {raw_ecg.info['sfreq']} Hz")
+            #logger.info(f"Duration: {raw_ecg.times[-1]:.2f} seconds")
             return raw_ecg
         except Exception as e:
             logger.error(f"Error loading ECG data from {ecg_file}: {e}")
@@ -124,7 +124,7 @@ class ECGFileLoader:
         """
         try:
             raw_eeg = mne.io.read_raw_edf(eeg_file, preload=True, verbose=False)
-            logger.info(f"Loaded EEG data from {eeg_file}")
+            #logger.info(f"Loaded EEG data from {eeg_file}")
             return raw_eeg
         except Exception as e:
             logger.error(f"Error loading EEG data from {eeg_file}: {e}")
