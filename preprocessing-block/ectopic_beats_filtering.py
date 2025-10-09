@@ -319,7 +319,7 @@ def impute_gaps(filtered_rr_s, filtered_ts_s, min_rr_s=0.3, max_rr_s=1.3):
 
 # Outlier Handling Pipeline Wrapper
 
-def process_dvc_for_session(session_data):
+def process_dvc_for_session(session_data, min_rr_s=0.3, max_rr_s=1.3):
     """
     A wrapper function to apply the full DVC pipeline to a single session dict.
 
@@ -343,10 +343,10 @@ def process_dvc_for_session(session_data):
     print(f"Initial beat count: {len(rr_intervals_ms)}")
 
     # Filter the RR series
-    filtered_rr, filtered_ts = filter_ectopic_beats(rr_intervals_ms, rpeaks_times)
+    filtered_rr, filtered_ts = filter_ectopic_beats(rr_intervals_ms, rpeaks_times, min_rr_s, max_rr_s)
 
     # Impute the gaps
-    imputed_rr, imputed_ts = impute_gaps(filtered_rr, filtered_ts)
+    imputed_rr, imputed_ts = impute_gaps(filtered_rr, filtered_ts, min_rr_s, max_rr_s)
     
     # Update the session dictionary with the results
     session_data['dvc_rr_intervals_s'] = imputed_rr
