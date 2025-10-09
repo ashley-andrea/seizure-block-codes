@@ -42,7 +42,7 @@ def process_ecg_pantompkins(patient_data: List[Dict], method: str = "pantompkins
             print("cleaning done")
 
             # Apply Pan-Tompkins algorithm using NeuroKit2
-            signals, info = nk.ecg_peaks(ecg_signal_clean, sampling_rate=sampling_rate, method=method, correct_artifacts=False)
+            signals, info = nk.ecg_peaks(ecg_signal_clean, sampling_rate=sampling_rate, method=method, correct_artifacts=True)
 
             #Paramenti presi dalla docummentazione: 
             # ecg_cleaned (Union[list, np.array, pd.Series]) – The cleaned ECG channel as returned by ecg_clean().
@@ -59,6 +59,7 @@ def process_ecg_pantompkins(patient_data: List[Dict], method: str = "pantompkins
             # Calculate additional metrics
             rr_intervals = np.diff(rpeaks) / sampling_rate * 1000  # RR intervals in milliseconds
             # np.diff() fa la differenza tra elemtni consecutivi
+
             
             # Create processed data entry
             processed_entry = {
@@ -73,9 +74,9 @@ def process_ecg_pantompkins(patient_data: List[Dict], method: str = "pantompkins
                 'sampling_rate': sampling_rate,
                 'duration_seconds': len(ecg_signal) / sampling_rate,
                 
-                # Pan-Tompkins results
-                'pantompkins_signals': signals,
-                'pantompkins_info': info,
+                # method specific results
+                'method_signals': signals,
+                'method_info': info,
                 'rpeaks': rpeaks,
                 'rpeaks_times': rpeaks / sampling_rate,  # R-peaks in seconds
                 'rr_intervals_ms': rr_intervals,
