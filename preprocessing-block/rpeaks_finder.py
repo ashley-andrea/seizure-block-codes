@@ -3,18 +3,21 @@ import mne
 import numpy as np
 from typing import Dict, List, Optional
 import logging
+from ecgdetectors import Detectors
+from biosppy.signals import ecg
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def process_ecg_pantompkins(patient_data: List[Dict], method: str = "pantompkins1985") -> List[Dict]:
+def process_ecg_rpeaks(patient_data: List[Dict], method: str = "pantompkins1985") -> List[Dict]:
     """
-    Process ECG data using Pan-Tompkins algorithm for all runs of all patients.
-    
+    Process ECG data using R-peaks detection for all runs of all patients.
+
     Args:
         patient_data (List[Dict]): List of patient run data from ECGFileLoader
         method (str): NeuroKit2 method for ECG processing (default: "pantompkins1985")
+        We do not need the method if we do not use the neurokit2 function
         
     Returns:
         List[Dict]: List of processed ECG data with Pan-Tompkins results
@@ -38,23 +41,23 @@ def process_ecg_pantompkins(patient_data: List[Dict], method: str = "pantompkins
             logger.info(f"ECG signal shape: {ecg_signal.shape}, sampling rate: {sampling_rate} Hz")
             
             ##### TEST CLEANING #####
-            ecg_signal_clean = nk.ecg_clean(ecg_signal, sampling_rate=sampling_rate, method='neurokit')
-            print("cleaning done")
+            #ecg_signal_clean = nk.ecg_clean(ecg_signal, sampling_rate=sampling_rate, method='neurokit')
+            #print("cleaning done")
 
             # Apply Pan-Tompkins algorithm using NeuroKit2
-            signals, info = nk.ecg_peaks(ecg_signal_clean, sampling_rate=sampling_rate, method=method, correct_artifacts=True)
+            #signals, info = nk.ecg_peaks(ecg_signal_clean, sampling_rate=sampling_rate, method=method, correct_artifacts=True)
 
-            #Paramenti presi dalla docummentazione: 
-            # ecg_cleaned (Union[list, np.array, pd.Series]) – The cleaned ECG channel as returned by ecg_clean().
-            # sampling_rate (int) – The sampling frequency of ecg_cleaned (in Hz, i.e., samples/second). Defaults to 1000.
-            # method (string) – The algorithm to be used for R-peak detection.
-            # correct_artifacts (bool) – Whether or not to identify and fix artifacts, using the method by Lipponen & Tarvainen (2019).
-            # show (bool) – If True, will show a plot of the signal with peaks. Defaults to False.
-            # **kwargs – Additional keyword arguments, usually specific for each method.
-
-            
             # Extract R-peaks and other information
-            rpeaks = info["ECG_R_Peaks"]
+            #rpeaks = info["ECG_R_Peaks"]
+
+            # PROVA CON ECGDETECTOR
+            #detectors = Detectors(sampling_rate)
+            #rpeaks = np.array(detectors.pan_tompkins_detector(ecg_signal))
+
+            # PROVA CON biosppy
+            out = ecg.engzee_segmenter(signal=ecg_signal, sampling_rate=sampling_rate)
+            rpeaks = out['rpeaks']
+
             
             # Calculate additional metrics
             rr_intervals = np.diff(rpeaks) / sampling_rate * 1000  # RR intervals in milliseconds
@@ -75,15 +78,15 @@ def process_ecg_pantompkins(patient_data: List[Dict], method: str = "pantompkins
                 'duration_seconds': len(ecg_signal) / sampling_rate,
                 
                 # method specific results
-                'method_signals': signals,
-                'method_info': info,
+                #'method_signals': signals,
+                #'method_info': info,
                 'rpeaks': rpeaks,
                 'rpeaks_times': rpeaks / sampling_rate,  # R-peaks in seconds
                 'rr_intervals_ms': rr_intervals,
                 'num_beats': len(rpeaks),
                 
                 # Processing metadata
-                'processing_method': method,
+                'processing_method': "biosppy",
             }
             
             processed_data.append(processed_entry)
@@ -106,15 +109,16 @@ def process_ecg_pantompkins(patient_data: List[Dict], method: str = "pantompkins
                 'error_message': str(e)
             }
             processed_data.append(failed_entry)
-    
-    logger.info(f"Completed Pan-Tompkins processing for {len(processed_data)} runs")
+
+    logger.info(f"Completed R-peaks detection processing for {len(processed_data)} runs")
     return processed_data
 
 
-def process_all_patients_pantompkins(loader, patient_ids: List[str] = None, method: str = "pantompkins1985") -> Dict[str, List[Dict]]:
+
+def process_all_patients_rpeaks(loader, patient_ids: List[str] = None, method: str = "pantompkins1985") -> Dict[str, List[Dict]]:
     """
-    Process ECG data using Pan-Tompkins algorithm for multiple patients.
-    
+    Process ECG data using R-peaks detection for multiple patients.
+
     Args:
         loader: ECGFileLoader instance
         patient_ids (List[str], optional): List of patient IDs to process. If None, processes all patients.
@@ -129,7 +133,7 @@ def process_all_patients_pantompkins(loader, patient_ids: List[str] = None, meth
     if patient_ids is None:
         patient_ids = loader.get_patient_list()
     
-    logger.info(f"Processing Pan-Tompkins for {len(patient_ids)} patients: {patient_ids}")
+    logger.info(f"Processing R-peaks detection for {len(patient_ids)} patients: {patient_ids}")
     
     for patient_id in patient_ids:
         logger.info(f"Loading data for patient {patient_id}")
@@ -137,9 +141,9 @@ def process_all_patients_pantompkins(loader, patient_ids: List[str] = None, meth
         try:
             # Load patient data
             patient_data = loader.get_ecg_with_annotations(patient_id)
-            
-            # Process with Pan-Tompkins
-            processed_runs = process_ecg_pantompkins(patient_data, method=method)
+
+            # Process with R-peaks detection
+            processed_runs = process_ecg_rpeaks(patient_data, method=method)
             
             all_processed_data[patient_id] = processed_runs
             
