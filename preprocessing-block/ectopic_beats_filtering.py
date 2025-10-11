@@ -224,89 +224,60 @@ def impute_gaps(filtered_rr_s, filtered_ts_s, min_rr_s=0.3, max_rr_s=1.3):
     rr_final = list(filtered_rr_s)
     ts_final = list(filtered_ts_s)
     
-    # We iterate forwards to find gaps
     i = 0
     while i < len(ts_final) - 1:
+        # The gap is identified by a large time jump between consecutive timestamps
         gap_duration = ts_final[i+1] - ts_final[i]
         
-        # A gap is identified if the time between two consecutive beats is > max_rr_s
-        if gap_duration > max_rr_s:
-            print(f"Found a {gap_duration:.2f}s gap between ts {ts_final[i]:.2f} and {ts_final[i+1]:.2f}.")
+        # The RR interval representing this gap is at index `i` in the rr_final list
+        if gap_duration > 1.3:
+            print(f"Found a {gap_duration:.2f}s gap. The RR interval at index {i} will be replaced.")
             
             t_start = ts_final[i]
             t_end = ts_final[i+1]
-            rr_end = rr_final[i+1] # The first RR interval at the end of the gap
             
-            # Get last 10 RR intervals before the gap for statistics
-            start_idx = max(0, i - 10)
-            last_10_rrs = rr_final[start_idx:i+1]
+            start_idx = max(0, i - 9)
+            last_10_rrs = rr_final[start_idx:i+1] # Use up to the beat before the gap
             
-            if len(last_10_rrs) < 2:
-                print("  > Not enough data before gap. Using global mean as fallback.")
-                mu = np.mean(rr_final)
-                sigma = np.std(rr_final)
-            else:
-                mu = np.mean(last_10_rrs)
-                sigma = np.std(last_10_rrs)
+            mu = np.mean(last_10_rrs) if last_10_rrs else 0.8
+            sigma = np.std(last_10_rrs) if len(last_10_rrs) > 1 else 0.1
 
-            # Iterative Filling Process (from end of gap backwards)
             newly_generated_rrs = []
             newly_generated_ts = []
-            
             current_t = t_end
-            current_rr_after = rr_end
-
-            while (current_t - t_start) > max_rr_s:
-                max_deviation = 0.4 # Start with 40% max deviation
-                
-                # Try to generate a valid RR up to 4 times, increasing deviation if needed
+            
+            while (current_t - t_start) > 1.3:
+                generated = False
                 for attempt in range(5):
-                    # Generate a new RR from Gaussian distribution
                     new_rr = np.random.normal(mu, sigma)
-                    
-                    # Check physiological conditions
-                    cond1 = min_rr_s < new_rr < max_rr_s
-                    deviation = abs(new_rr - current_rr_after) / current_rr_after if current_rr_after > 0 else float('inf')
-                    cond2 = deviation < max_deviation
-                    
-                    if cond1 and cond2:
-                        # Success!
-                        new_t = current_t - current_rr_after
-                        
+                    if 0.3 < new_rr < 1.3 and (current_t - new_rr) > t_start:
+                        new_t = current_t - new_rr
                         newly_generated_rrs.insert(0, new_rr)
                         newly_generated_ts.insert(0, new_t)
-                        
-                        # Update for next iteration
                         current_t = new_t
-                        current_rr_after = new_rr
-                        break # Exit the attempt loop
-                        
-                    if attempt == 3: # After 4 tries, increase deviation
-                        max_deviation += 0.05
-                else: # If loop finishes without break, we failed to find a value
-                    print("  > Warning: Could not find a suitable RR to fill gap. Stopping imputation for this gap.")
-                    # Clear generated values to avoid partial fills
-                    newly_generated_rrs = []
-                    newly_generated_ts = []
-                    break # Exit the while loop for this gap
+                        generated = True
+                        break
+                if not generated:
+                    newly_generated_rrs, newly_generated_ts = [], []
+                    break
             
-            # Add the last RR that closes the gap 
             if newly_generated_rrs:
-                remaining_gap = current_t - t_start
-                if min_rr_s < remaining_gap < max_rr_s:
-                    print(f"  > Successfully filled gap with {len(newly_generated_rrs)+1} new beats.")
-                    # This last RR is calculated directly, not randomly
-                    last_rr = remaining_gap
+                last_rr = current_t - t_start
+                if 0.3 < last_rr < 1.3:
+                    print(f"  > Replacing 1 large RR with {len(newly_generated_rrs) + 1} new beats.")
                     newly_generated_rrs.insert(0, last_rr)
                     
-                    # Insert the generated values into the final lists
-                    # The new timestamps replace the one at i+1
-                    ts_final = ts_final[:i+1] + newly_generated_ts + ts_final[i+1:]
-                    # The new RRs are inserted between i and i+1
-                    rr_final = rr_final[:i+1] + newly_generated_rrs + rr_final[i+1:]
+                    # --- CRITICAL FIX AREA ---
+                    # Correctly reassemble both lists
                     
-                    # Advance the main loop index past the newly added beats
-                    i += len(newly_generated_rrs)
+                    # Timestamps: take the start, insert the new timestamps, add the end
+                    ts_final = ts_final[:i+1] + newly_generated_ts + ts_final[i+1:]
+                    
+                    # RR Intervals: take the start, insert the new RRs, add the end.
+                    # This replaces the single bad RR at index `i`.
+                    rr_final = rr_final[:i] + newly_generated_rrs + rr_final[i+1:]
+                    
+                    i += len(newly_generated_rrs) -1 # Advance index past new beats
             else:
                 print("  > Failed to fill the gap.")
         
@@ -340,21 +311,37 @@ def process_dvc_for_session(session_data, min_rr_s=0.3, max_rr_s=1.3):
     rr_intervals_ms = session_data['rr_intervals_ms']
     rpeaks_times = session_data['rpeaks_times']
     
-    print(f"Initial beat count: {len(rr_intervals_ms)}")
+    print(f"Initial state: {len(rr_intervals_ms)} RRs, {len(rpeaks_times)} timestamps.")
 
-    # Filter the RR series
     filtered_rr, filtered_ts = filter_ectopic_beats(rr_intervals_ms, rpeaks_times, min_rr_s, max_rr_s)
-
-    # Impute the gaps
     imputed_rr, imputed_ts = impute_gaps(filtered_rr, filtered_ts, min_rr_s, max_rr_s)
     
-    # Update the session dictionary with the results
+    # --- VERIFICATION STEP ---
+    print("\n--- Verifying final output integrity ---")
+    is_consistent = len(imputed_rr) == len(imputed_ts) - 1
+    print(f"Final state: {len(imputed_rr)} RRs, {len(imputed_ts)} timestamps.")
+    print(f"Is structure (n, n+1) preserved? {'Yes' if is_consistent else 'No!'}")
+
+    if is_consistent and len(imputed_rr) > 5:
+        # Check a few random intervals to be sure
+        check_idx = 5
+        calculated_rr = imputed_ts[check_idx+1] - imputed_ts[check_idx]
+        stored_rr = imputed_rr[check_idx]
+        print(f"Sample check at index {check_idx}:")
+        print(f"  Stored RR     = {stored_rr:.4f} s")
+        print(f"  Calculated RR = {calculated_rr:.4f} s (from ts[{check_idx+1}] - ts[{check_idx}])")
+        if not np.isclose(calculated_rr, stored_rr):
+            print("  !! Mismatch found !!")
+        else:
+            print("  Sample check passed.")
+    
+    if not is_consistent:
+        print("!! WARNING: Final output does not respect the n and n+1 principle. !!")
+
     session_data['dvc_rr_intervals_s'] = imputed_rr
-    session_data['dvc_rr_intervals_ms'] = imputed_rr * 1000 # Convert back to ms
+    session_data['dvc_rr_intervals_ms'] = imputed_rr * 1000
     session_data['dvc_rpeak_times_s'] = imputed_ts
     session_data['dvc_processed'] = True
-    
-    print(f"\nFinal beat count after DVC processing: {len(imputed_rr)}")
     
     return session_data
 
@@ -367,3 +354,8 @@ for patient_id, sessions in patients_data.items():
         processed_session = process_dvc_for_session(session)
         patients_data[patient_id][i] = processed_session
 '''
+
+
+
+
+
