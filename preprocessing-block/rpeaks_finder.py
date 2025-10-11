@@ -87,6 +87,7 @@ def process_ecg_rpeaks(patient_data: List[Dict], method: str = "pantompkins1985"
                 
                 # Processing metadata
                 'processing_method': "biosppy",
+                'processed_successfully': True
             }
             
             processed_data.append(processed_entry)
@@ -112,8 +113,6 @@ def process_ecg_rpeaks(patient_data: List[Dict], method: str = "pantompkins1985"
 
     logger.info(f"Completed R-peaks detection processing for {len(processed_data)} runs")
     return processed_data
-
-
 
 def process_all_patients_rpeaks(loader, patient_ids: List[str] = None, method: str = "pantompkins1985") -> Dict[str, List[Dict]]:
     """
