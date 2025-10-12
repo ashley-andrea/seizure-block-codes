@@ -1,7 +1,8 @@
 import numpy as np
 import pyhrv.time_domain as td
 
-def compute_hrv_features(rr_intervals, timestamps_rr, sampling_rate=512, window_minutes=5, tolerance_ms=1300):
+def compute_hrv_features(rpeaks, sampling_rate=256, window_minutes=5, tolerance_ms=1300):
+    print("testing")
     """
     Compute HRV features in non-overlapping windows of specified length,
     ensuring no RR interval is broken (±tolerance around boundaries).
@@ -22,8 +23,8 @@ def compute_hrv_features(rr_intervals, timestamps_rr, sampling_rate=512, window_
     results_list : list of dict
         Each element contains HRV features for one window.
     """
-    rr_intervals = np.array(rr_intervals)
-    timestamps = np.array(timestamps_rr[1:]) * 1000
+    rpeaks = np.array(rpeaks)
+    timestamps = rpeaks * 1000  # Convert to milliseconds for processing
     total_duration = timestamps[-1]
 
     window_length_ms = window_minutes * 60 * 1000  # convert to ms
@@ -47,10 +48,10 @@ def compute_hrv_features(rr_intervals, timestamps_rr, sampling_rate=512, window_
 
         # Extract RR intervals that fit entirely within this window
         mask = (timestamps > start_time) & (timestamps <= end_time)
-        rr_window = rr_intervals[mask]
+        rr_window = rpeaks[mask]
 
         if len(rr_window) > 1:
-            features = td.time_domain(rr_window, sampling_rate=sampling_rate, plot=False)
+            features = td.time_domain(rpeaks=rr_window, sampling_rate=sampling_rate, plot=False)
             # Store both features and window times (in seconds)
             results_list.append({
                 'start_time_s': start_time / 1000,
@@ -67,18 +68,18 @@ def compute_hrv_features(rr_intervals, timestamps_rr, sampling_rate=512, window_
     return results_list
 
 
-def compute_hrv_features_sliding(rr_intervals, timestamps, sampling_rate=512,
+def compute_hrv_features_sliding(rpeaks, sampling_rate=256,
                                  window_minutes=5, step_minutes=1, tolerance_ms=1300):
     """
     Compute HRV features over overlapping 5-min windows (every 1 minute)
     with tolerance-based alignment to nearest RR timestamp.
     """
-    rr_intervals = np.array(rr_intervals)
-    timestamps = np.array(timestamps[1:]) * 1000  # convert to ms
+    rpeaks = np.array(rpeaks)
+    timestamps = rpeaks * 1000  # Convert to milliseconds for processing
+    total_duration = timestamps[-1]
 
     window_ms = window_minutes * 60 * 1000
     step_ms = step_minutes * 60 * 1000
-    total_duration = timestamps[-1]
 
     results = []
     current_end_target = window_ms  # first end point (5 min)
@@ -110,10 +111,10 @@ def compute_hrv_features_sliding(rr_intervals, timestamps, sampling_rate=512,
 
         # ---- Extract RR intervals inside this window ----
         mask = (timestamps > start_time) & (timestamps <= end_time)
-        rr_window = rr_intervals[mask]
+        rr_window = rpeaks[mask]
 
         if len(rr_window) > 1:
-            features = td.time_domain(rr_window, sampling_rate=sampling_rate, plot=False)
+            features = td.time_domain(rpeaks=rr_window, sampling_rate=sampling_rate, plot=False)
             results.append({
                 'minute': end_time / 60000,  # convert to minutes
                 'win_start_time_s': start_time / 1000,
@@ -126,7 +127,6 @@ def compute_hrv_features_sliding(rr_intervals, timestamps, sampling_rate=512,
 
     print("Finished processing.")
     return results
-
 
 
 
