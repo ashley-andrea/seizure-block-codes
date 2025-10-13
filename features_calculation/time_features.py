@@ -1,7 +1,7 @@
 import numpy as np
 import pyhrv.time_domain as td
 
-def compute_hrv_features(rpeaks, sampling_rate=256, window_minutes=5, tolerance_ms=1300):
+def compute_time_features(rpeaks, sampling_rate=256, window_minutes=5, tolerance_ms=1300):
     print("testing")
     """
     Compute HRV features in non-overlapping windows of specified length,
@@ -68,7 +68,7 @@ def compute_hrv_features(rpeaks, sampling_rate=256, window_minutes=5, tolerance_
     return results_list
 
 
-def compute_hrv_features_sliding(rpeaks, sampling_rate=256,
+def compute_time_features_sliding(rpeaks, sampling_rate=256,
                                  window_minutes=5, step_minutes=1, tolerance_ms=1300):
     """
     Compute HRV features over overlapping 5-min windows (every 1 minute)
