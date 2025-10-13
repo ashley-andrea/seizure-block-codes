@@ -80,7 +80,7 @@ def custom_welch_psd(nni=None,
                      show_param=True,
                      legend=True,
                      figsize=None,
-                     mode='normal'):
+                     mode='dev'):
     """
     Computes a Power Spectral Density (PSD) estimation from the NNI series using Welch's method
     with enhanced interpolation options and adaptive resolution based on window length.
