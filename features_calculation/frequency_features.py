@@ -30,11 +30,21 @@ def extract_frequency_features(window_result, bands_of_interest=None):
     dict : Dictionary with extracted features (only for bands of interest)
     """
     params = window_result['features'][0]
+
+    # Handle both non-sliding and sliding window formats
+    if 'start_time_s' in window_result:
+        # Non-sliding window format
+        start_time = window_result['start_time_s']
+        end_time = window_result['end_time_s']
+    else:
+        # Sliding window format
+        start_time = window_result['win_start_time_s']
+        end_time = window_result['win_end_time_s']
     
     # Base features always present
     extracted = {
-        'window_start': window_result['start_time_s'],
-        'window_end': window_result['end_time_s'],
+        'window_start': start_time,
+        'window_end': end_time,
         'n_peaks': len(window_result['rpeaks_window']),
         'total_power': params['fft_total'],
     }
@@ -56,9 +66,21 @@ def extract_frequency_features(window_result, bands_of_interest=None):
             extracted[f'{band}_rel'] = params['fft_rel'][idx]
             extracted[f'{band}_peak'] = params['fft_peak'][idx]
     
-    # LF/HF ratio only if both bands are in bands of interest
+    # LF/HF ratio and normalized relative powers only if both bands are in bands of interest
     if 'lf' in bands_to_extract and 'hf' in bands_to_extract:
         extracted['lf_hf_ratio'] = params['fft_ratio']
+        
+        # Calculate normalized relative powers: LF/(LF+HF) and HF/(LF+HF)
+        lf_abs = params['fft_abs'][1]  # LF is at index 1
+        hf_abs = params['fft_abs'][2]  # HF is at index 2
+        lf_hf_sum = lf_abs + hf_abs
+        
+        if lf_hf_sum > 0:  # Avoid division by zero
+            extracted['fft_rel_lf'] = (lf_abs / lf_hf_sum) * 100  # in percentage
+            extracted['fft_rel_hf'] = (hf_abs / lf_hf_sum) * 100  # in percentage
+        else:
+            extracted['fft_rel_lf'] = 0.0
+            extracted['fft_rel_hf'] = 0.0
     
     return extracted
 
@@ -506,6 +528,10 @@ def compute_frequency_features(rpeaks,
                     print(f"  HF:  {extracted['hf_abs']:.2f} ms² ({extracted['hf_rel']:.2f}%) @ {extracted['hf_peak']:.4f} Hz")
                 if 'lf_hf_ratio' in extracted:
                     print(f"  LF/HF Ratio: {extracted['lf_hf_ratio']:.2f}")
+                # Print normalized relative powers if both LF and HF are present
+                if 'fft_rel_lf' in extracted and 'fft_rel_hf' in extracted:
+                    print(f"  LF/(LF+HF): {extracted['fft_rel_lf']:.2f}%")
+                    print(f"  HF/(LF+HF): {extracted['fft_rel_hf']:.2f}%")
                 print(f"  Total Power: {extracted['total_power']:.2f} ms²")
                 print()
             
@@ -587,4 +613,308 @@ for window in results_lf_hf:
 '''
 
 
-# Sliding window TBD
+# Sliding window 
+def compute_frequency_features_sliding(rpeaks,
+                                      window_minutes=5,
+                                      step_minutes=1,
+                                      tolerance_ms=1300,
+                                      use_custom_welch=False,
+                                      welch_params=None,
+                                      bands_of_interest=None,
+                                      print_features=True):
+    """
+    Compute frequency features over sliding windows (e.g., 5-min windows every 1 minute)
+    with tolerance-based alignment to nearest R-peak timestamp.
+
+    Parameters:
+    -----------
+    rpeaks : list or np.ndarray
+        Array of R-peak timestamps in seconds.
+    window_minutes : float
+        Window length in minutes (default: 5)
+    step_minutes : float
+        Step size in minutes (default: 1)
+    tolerance_ms : int
+        Max allowed deviation (±) around window boundary in ms (default: 1300)
+    use_custom_welch : bool, optional
+        If True, use custom_welch_psd; if False, use fd.welch_psd (default: False)
+    welch_params : dict, optional
+        Dictionary of parameters to pass to the selected Welch function.
+        
+        For DEFAULT welch (fd.welch_psd):
+        {
+            'nfft': 2**12,
+            'detrend': True,
+            'window': 'hamming',
+            'show': False,
+            'show_param': False,
+            'legend': True,
+            'figsize': None,
+            'mode': 'dev'
+        }
+        
+        For CUSTOM welch (custom_welch_psd):
+        {
+            'detrend': True,
+            'window': 'hamming',
+            'interpolation': 'makima',
+            'hp_filter': True,
+            'hp_cutoff': 0.0033,
+            'overlap': 0.5,
+            'override_nperseg': None,
+            'override_nfft': None,
+            'show': False,
+            'show_param': False,
+            'legend': True,
+            'figsize': None,
+            'mode': 'dev'
+        }
+    bands_of_interest : list, optional
+        List of bands to extract and display: ['vlf'], ['lf', 'hf'], or ['vlf', 'lf', 'hf']
+        If None, all bands are extracted (default: None for all bands)
+    print_features : bool, optional
+        If True, print extracted features for each window (default: True)
+
+    Returns:
+    --------
+    results_list : list of dict
+        Each element contains:
+        - 'minute': window end time in minutes
+        - 'win_start_time_s': window start time in seconds
+        - 'win_end_time_s': window end time in seconds
+        - 'rpeaks_window': array of R-peak timestamps (in seconds) within the window
+        - 'features': raw HRV features tuple from Welch function (all bands)
+        - 'extracted_features': dict with cleaned/organized feature values (filtered bands)
+    """
+    # Set default parameters based on which Welch method is used
+    if use_custom_welch:
+        default_welch_params = {
+            'fbands': None,  # Always None - compute all bands
+            'detrend': True,
+            'window': 'hamming',
+            'interpolation': 'makima',
+            'hp_filter': True,
+            'hp_cutoff': 0.0033,
+            'overlap': 0.5,
+            'override_nperseg': None,
+            'override_nfft': None,
+            'show': False,
+            'show_param': False,
+            'legend': True,
+            'figsize': None,
+            'mode': 'dev'
+        }
+    else:
+        default_welch_params = {
+            'fbands': None,  # Always None - compute all bands
+            'nfft': 2**12,
+            'detrend': True,
+            'window': 'hamming',
+            'show': False,
+            'show_param': False,
+            'legend': True,
+            'figsize': None,
+            'mode': 'dev'
+        }
+    
+    # Update with user-provided parameters
+    if welch_params is not None:
+        # Remove 'fbands' if user provided it (we always use None)
+        welch_params_clean = {k: v for k, v in welch_params.items() if k != 'fbands'}
+        default_welch_params.update(welch_params_clean)
+    
+    # Force fbands to None to always compute all bands
+    default_welch_params['fbands'] = None
+    
+    rpeaks = np.array(rpeaks)
+    timestamps_ms = rpeaks * 1000  # Convert to milliseconds for processing
+    total_duration = timestamps_ms[-1]
+
+    window_ms = window_minutes * 60 * 1000
+    step_ms = step_minutes * 60 * 1000
+
+    results_list = []
+    current_end_target = window_ms  # first end point (e.g., 5 min)
+
+    welch_method = "CUSTOM" if use_custom_welch else "DEFAULT"
+    print(f"Starting sliding frequency feature computation...")
+    print(f"Window: {window_minutes} min, Step: {step_minutes} min, Tolerance: ±{tolerance_ms}ms")
+    print(f"Using {welch_method} Welch PSD method")
+    
+    if bands_of_interest is not None:
+        bands_display = [b.upper() for b in bands_of_interest]
+        print(f"Extracting and displaying only: {', '.join(bands_display)}")
+    else:
+        print(f"Extracting and displaying all bands: VLF, LF, HF")
+    print()
+
+    window_count = 0
+    
+    while current_end_target <= total_duration:
+        # Find R-peak closest to target end time
+        diff = np.abs(timestamps_ms - current_end_target)
+        valid_indices = np.where(diff <= tolerance_ms)[0]
+
+        if len(valid_indices) == 0:
+            print(f"No R-peak within tolerance for target end time {current_end_target/1000:.2f}s. Skipping.")
+            current_end_target += step_ms
+            continue
+
+        cut_idx = valid_indices[np.argmin(diff[valid_indices])]
+        end_time = timestamps_ms[cut_idx]
+
+        # Align start_time based on the new end_time
+        start_target = end_time - window_ms
+        
+        # Find R-peak close to start_target
+        diff_start = np.abs(timestamps_ms - start_target)
+        valid_start_indices = np.where(diff_start <= tolerance_ms)[0]
+        if len(valid_start_indices) > 0:
+            start_idx = valid_start_indices[np.argmin(diff_start[valid_start_indices])]
+            start_time = timestamps_ms[start_idx]
+        else:
+            start_time = start_target  # fallback if no close R-peak
+
+        # Extract R-peaks inside this window
+        mask = (timestamps_ms > start_time) & (timestamps_ms <= end_time)
+        rpeaks_window = rpeaks[mask]
+
+        if len(rpeaks_window) > 2:  # Need at least 3 peaks to compute 2 RR intervals
+            window_count += 1
+            
+            if print_features:
+                print(f"Window {window_count} (minute {end_time/60000:.1f}): "
+                      f"{start_time/1000:.2f}s - {end_time/1000:.2f}s ({len(rpeaks_window)} peaks)")
+            
+            # Select which Welch function to use (always computes all bands)
+            if use_custom_welch:
+                features = custom_welch_psd(
+                    nni=None,
+                    rpeaks=rpeaks_window,
+                    **default_welch_params
+                )
+            else:
+                features = fd.welch_psd(
+                    nni=None,
+                    rpeaks=rpeaks_window,
+                    **default_welch_params
+                )
+            
+            # Store window result
+            window_result = {
+                'minute': end_time / 60000,  # convert to minutes
+                'win_start_time_s': start_time / 1000,
+                'win_end_time_s': end_time / 1000,
+                'rpeaks_window': rpeaks_window,
+                'features': features
+            }
+            
+            # Extract only bands of interest
+            extracted = extract_frequency_features(window_result, bands_of_interest=bands_of_interest)
+            window_result['extracted_features'] = extracted
+            
+            # Print features if requested (only for bands of interest)
+            if print_features:
+                if 'vlf_abs' in extracted:
+                    print(f"  VLF: {extracted['vlf_abs']:.2f} ms² ({extracted['vlf_rel']:.2f}%) @ {extracted['vlf_peak']:.4f} Hz")
+                if 'lf_abs' in extracted:
+                    print(f"  LF:  {extracted['lf_abs']:.2f} ms² ({extracted['lf_rel']:.2f}%) @ {extracted['lf_peak']:.4f} Hz")
+                if 'hf_abs' in extracted:
+                    print(f"  HF:  {extracted['hf_abs']:.2f} ms² ({extracted['hf_rel']:.2f}%) @ {extracted['hf_peak']:.4f} Hz")
+                if 'lf_hf_ratio' in extracted:
+                    print(f"  LF/HF Ratio: {extracted['lf_hf_ratio']:.2f}")
+                # Print normalized relative powers if both LF and HF are present
+                if 'fft_rel_lf' in extracted and 'fft_rel_hf' in extracted:
+                    print(f"  LF/(LF+HF): {extracted['fft_rel_lf']:.2f}%")
+                    print(f"  HF/(LF+HF): {extracted['fft_rel_hf']:.2f}%")
+                print(f"  Total Power: {extracted['total_power']:.2f} ms²")
+                print()
+            
+            results_list.append(window_result)
+        else:
+            if print_features:
+                print(f"Skipping window at minute {end_time/60000:.1f} "
+                      f"({start_time/1000:.2f}s - {end_time/1000:.2f}s): only {len(rpeaks_window)} peaks\n")
+
+        # Move to next step
+        current_end_target += step_ms
+
+    print(f"Finished processing. Total windows: {len(results_list)}")
+    return results_list
+
+
+'''
+## EXAMPLE USAGE:
+
+# ===== Default Welch: 5-min windows every 1 minute =====
+results_sliding_default = compute_frequency_features_sliding(
+    rpeaks=filtered_rpeak_times,
+    window_minutes=5,
+    step_minutes=1,
+    use_custom_welch=False
+)
+
+# ===== Custom Welch: 5-min windows every 1 minute, only LF+HF =====
+results_sliding_custom_lf_hf = compute_frequency_features_sliding(
+    rpeaks=filtered_rpeak_times,
+    window_minutes=5,
+    step_minutes=1,
+    use_custom_welch=True,
+    bands_of_interest=['lf', 'hf']
+)
+
+# ===== Custom Welch: 10-min windows every 1 minute, only VLF =====
+results_sliding_vlf = compute_frequency_features_sliding(
+    rpeaks=filtered_rpeak_times,
+    window_minutes=10,
+    step_minutes=1,
+    use_custom_welch=True,
+    welch_params={'overlap': 0.75},
+    bands_of_interest=['vlf']
+)
+
+# ===== Custom Welch: 3-min windows every 30 seconds (0.5 min) =====
+results_sliding_high_res = compute_frequency_features_sliding(
+    rpeaks=filtered_rpeak_times,
+    window_minutes=3,
+    step_minutes=0.5,
+    use_custom_welch=True,
+    welch_params={'hp_filter': False},
+    print_features=False  # Don't print each window
+)
+
+# ===== Access results =====
+for window in results_sliding_custom_lf_hf:
+    minute = window['minute']
+    features = window['extracted_features']
+    print(f"Minute {minute:.1f}: LF={features['lf_abs']:.2f} ms², HF={features['hf_abs']:.2f} ms²")
+
+# ===== Plot features over time =====
+import matplotlib.pyplot as plt
+
+minutes = [w['minute'] for w in results_sliding_custom_lf_hf]
+lf_power = [w['extracted_features']['lf_abs'] for w in results_sliding_custom_lf_hf]
+hf_power = [w['extracted_features']['hf_abs'] for w in results_sliding_custom_lf_hf]
+lf_hf_ratio = [w['extracted_features']['lf_hf_ratio'] for w in results_sliding_custom_lf_hf]
+
+fig, axes = plt.subplots(3, 1, figsize=(15, 10))
+
+axes[0].plot(minutes, lf_power, marker='o', label='LF Power')
+axes[0].set_ylabel('LF Power (ms²)')
+axes[0].legend()
+axes[0].grid(True)
+
+axes[1].plot(minutes, hf_power, marker='o', label='HF Power', color='green')
+axes[1].set_ylabel('HF Power (ms²)')
+axes[1].legend()
+axes[1].grid(True)
+
+axes[2].plot(minutes, lf_hf_ratio, marker='o', label='LF/HF Ratio', color='red')
+axes[2].set_xlabel('Time (minutes)')
+axes[2].set_ylabel('LF/HF Ratio')
+axes[2].legend()
+axes[2].grid(True)
+
+plt.tight_layout()
+plt.show()
+'''
