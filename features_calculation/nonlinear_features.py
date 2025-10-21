@@ -3,7 +3,7 @@ import pyhrv.nonlinear as nl
 
 
 def compute_nonlinear_features_sliding(rpeaks, sampling_rate=256,
-                                 window_minutes=5, step_minutes=1, show_plot = False, kwargs_poincare = {}, kwargs_sampen = {}, kwargs_dfa= {}, tolerance_ms=1300):
+                                 window_minutes=5, step_minutes=1, show_plot=False, kwargs_poincare = {}, kwargs_sampen = {}, kwargs_dfa= {}, tolerance_ms=1300):
     """
     Compute HRV features over overlapping 5-min windows (every 1 minute)
     with tolerance-based alignment to nearest RR timestamp.
