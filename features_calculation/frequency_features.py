@@ -29,7 +29,15 @@ def extract_frequency_features(window_result, bands_of_interest=None):
     --------
     dict : Dictionary with extracted features (only for bands of interest)
     """
-    params = window_result['features'][0]
+    params_raw = window_result['features'][0]
+    
+    # Coerce ReturnTuple / namedtuple-like object into a plain dict
+    if isinstance(params_raw, dict):
+        params = params_raw
+    elif hasattr(params_raw, '_asdict'):
+        params = params_raw._asdict()
+    else:
+        params = dict(params_raw)
 
     # Handle both non-sliding and sliding window formats
     if 'start_time_s' in window_result:
@@ -46,7 +54,7 @@ def extract_frequency_features(window_result, bands_of_interest=None):
         'window_start': start_time,
         'window_end': end_time,
         'n_peaks': len(window_result['rpeaks_window']),
-        'total_power': params['fft_total'],
+        'total_power': params.get('fft_total', params.get('total_power', None)),
     }
     
     # Determine which bands to extract
@@ -58,29 +66,60 @@ def extract_frequency_features(window_result, bands_of_interest=None):
     # Map band names to indices (pyHRV always computes in this order)
     band_indices = {'vlf': 0, 'lf': 1, 'hf': 2}
     
-    # Extract features for each band of interest
+    # Extract features for each band of interest, including log & norm per-band
     for band in bands_to_extract:
         if band in band_indices:
             idx = band_indices[band]
-            extracted[f'{band}_abs'] = params['fft_abs'][idx]
-            extracted[f'{band}_rel'] = params['fft_rel'][idx]
-            extracted[f'{band}_peak'] = params['fft_peak'][idx]
+            # abs / rel / peak (safe access)
+            extracted[f'{band}_abs'] = params['fft_abs'][idx] if ('fft_abs' in params and len(params.get('fft_abs', [])) > idx) else None
+            extracted[f'{band}_rel'] = params['fft_rel'][idx] if ('fft_rel' in params and len(params.get('fft_rel', [])) > idx) else None
+            extracted[f'{band}_peak'] = params['fft_peak'][idx] if ('fft_peak' in params and len(params.get('fft_peak', [])) > idx) else None
+
+            # log power per-band (create e.g. lf_log, vlf_log, hf_log)
+            if 'fft_log' in params and len(params.get('fft_log', [])) > idx:
+                extracted[f'{band}_log'] = params['fft_log'][idx]
+            else:
+                extracted[f'{band}_log'] = None
+
+            # normalized power per-band (fft_norms or fft_norm) -> create e.g. lf_norm
+            if 'fft_norms' in params and len(params.get('fft_norms', [])) > idx:
+                extracted[f'{band}_norm'] = params['fft_norms'][idx]
+            elif 'fft_norm' in params and len(params.get('fft_norm', [])) > idx:
+                extracted[f'{band}_norm'] = params['fft_norm'][idx]
+            else:
+                extracted[f'{band}_norm'] = None
     
     # LF/HF ratio and normalized relative powers only if both bands are in bands of interest
     if 'lf' in bands_to_extract and 'hf' in bands_to_extract:
-        extracted['lf_hf_ratio'] = params['fft_ratio']
+        extracted['lf_hf_ratio'] = params.get('fft_ratio', None)
         
         # Calculate normalized relative powers: LF/(LF+HF) and HF/(LF+HF)
-        lf_abs = params['fft_abs'][1]  # LF is at index 1
-        hf_abs = params['fft_abs'][2]  # HF is at index 2
-        lf_hf_sum = lf_abs + hf_abs
+        lf_abs = None
+        hf_abs = None
+        try:
+            if 'fft_abs' in params:
+                lf_abs = params['fft_abs'][1]
+                hf_abs = params['fft_abs'][2]
+        except Exception:
+            pass
+
+        lf_hf_sum = (lf_abs or 0) + (hf_abs or 0)
         
         if lf_hf_sum > 0:  # Avoid division by zero
             extracted['fft_rel_lf'] = (lf_abs / lf_hf_sum) * 100  # in percentage
             extracted['fft_rel_hf'] = (hf_abs / lf_hf_sum) * 100  # in percentage
         else:
-            extracted['fft_rel_lf'] = 0.0
-            extracted['fft_rel_hf'] = 0.0
+            # fallback to fft_rel if available
+            if 'fft_rel' in params and len(params.get('fft_rel', [])) >= 3:
+                try:
+                    extracted['fft_rel_lf'] = params['fft_rel'][1]
+                    extracted['fft_rel_hf'] = params['fft_rel'][2]
+                except Exception:
+                    extracted['fft_rel_lf'] = None
+                    extracted['fft_rel_hf'] = None
+            else:
+                extracted['fft_rel_lf'] = None
+                extracted['fft_rel_hf'] = None
     
     return extracted
 
@@ -520,19 +559,51 @@ def compute_frequency_features(rpeaks,
             
             # Print features if requested (only for bands of interest)
             if print_features:
+                def _fmt(key, fmt):
+                    v = extracted.get(key, None)
+                    if v is None or (isinstance(v, float) and np.isnan(v)):
+                        return "NA"
+                    try:
+                        return fmt.format(v)
+                    except Exception:
+                        return str(v)
+
+                # VLF
                 if 'vlf_abs' in extracted:
-                    print(f"  VLF: {extracted['vlf_abs']:.2f} ms² ({extracted['vlf_rel']:.2f}%) @ {extracted['vlf_peak']:.4f} Hz")
+                    print("  VLF_abs: {} ms², VLF_rel: {} %, VLF_peak: {} Hz, VLF_log: {}, VLF_norm: {}".format(
+                        _fmt('vlf_abs', "{:.2f}"),
+                        _fmt('vlf_rel', "{:.2f}"),
+                        _fmt('vlf_peak', "{:.4f}"),
+                        _fmt('vlf_log', "{:.4f}"),
+                        _fmt('vlf_norm', "{:.4f}")
+                    ))
+                # LF
                 if 'lf_abs' in extracted:
-                    print(f"  LF:  {extracted['lf_abs']:.2f} ms² ({extracted['lf_rel']:.2f}%) @ {extracted['lf_peak']:.4f} Hz")
+                    print("  LF_abs: {} ms², LF_rel: {} %, LF_peak: {} Hz, LF_log: {}, LF_norm: {}".format(
+                        _fmt('lf_abs', "{:.2f}"),
+                        _fmt('lf_rel', "{:.2f}"),
+                        _fmt('lf_peak', "{:.4f}"),
+                        _fmt('lf_log', "{:.4f}"),
+                        _fmt('lf_norm', "{:.4f}")
+                    ))
+                # HF
                 if 'hf_abs' in extracted:
-                    print(f"  HF:  {extracted['hf_abs']:.2f} ms² ({extracted['hf_rel']:.2f}%) @ {extracted['hf_peak']:.4f} Hz")
+                    print("  HF_abs: {} ms², HF_rel: {} %, HF_peak: {} Hz, HF_log: {}, HF_norm: {}".format(
+                        _fmt('hf_abs', "{:.2f}"),
+                        _fmt('hf_rel', "{:.2f}"),
+                        _fmt('hf_peak', "{:.4f}"),
+                        _fmt('hf_log', "{:.4f}"),
+                        _fmt('hf_norm', "{:.4f}")
+                    ))
+                # LF/HF ratio
                 if 'lf_hf_ratio' in extracted:
-                    print(f"  LF/HF Ratio: {extracted['lf_hf_ratio']:.2f}")
-                # Print normalized relative powers if both LF and HF are present
+                    print("  lf_hf_ratio: {}".format(_fmt('lf_hf_ratio', "{:.2f}")))
+                # Normalized relative powers LF/(LF+HF) and HF/(LF+HF)
                 if 'fft_rel_lf' in extracted and 'fft_rel_hf' in extracted:
-                    print(f"  LF/(LF+HF): {extracted['fft_rel_lf']:.2f}%")
-                    print(f"  HF/(LF+HF): {extracted['fft_rel_hf']:.2f}%")
-                print(f"  Total Power: {extracted['total_power']:.2f} ms²")
+                    print("  fft_rel_lf (LF/(LF+HF) %): {}".format(_fmt('fft_rel_lf', "{:.2f}")))
+                    print("  fft_rel_hf (HF/(LF+HF) %): {}".format(_fmt('fft_rel_hf', "{:.2f}")))
+                # Total power
+                print("  total_power: {} ms²".format(_fmt('total_power', "{:.2f}")))
                 print()
             
             results_list.append(window_result)
@@ -815,19 +886,51 @@ def compute_frequency_features_sliding(rpeaks,
             
             # Print features if requested (only for bands of interest)
             if print_features:
+                def _fmt(key, fmt):
+                    v = extracted.get(key, None)
+                    if v is None or (isinstance(v, float) and np.isnan(v)):
+                        return "NA"
+                    try:
+                        return fmt.format(v)
+                    except Exception:
+                        return str(v)
+
+                # VLF
                 if 'vlf_abs' in extracted:
-                    print(f"  VLF: {extracted['vlf_abs']:.2f} ms² ({extracted['vlf_rel']:.2f}%) @ {extracted['vlf_peak']:.4f} Hz")
+                    print("  VLF_abs: {} ms², VLF_rel: {} %, VLF_peak: {} Hz, VLF_log: {}, VLF_norm: {}".format(
+                        _fmt('vlf_abs', "{:.2f}"),
+                        _fmt('vlf_rel', "{:.2f}"),
+                        _fmt('vlf_peak', "{:.4f}"),
+                        _fmt('vlf_log', "{:.4f}"),
+                        _fmt('vlf_norm', "{:.4f}")
+                    ))
+                # LF
                 if 'lf_abs' in extracted:
-                    print(f"  LF:  {extracted['lf_abs']:.2f} ms² ({extracted['lf_rel']:.2f}%) @ {extracted['lf_peak']:.4f} Hz")
+                    print("  LF_abs: {} ms², LF_rel: {} %, LF_peak: {} Hz, LF_log: {}, LF_norm: {}".format(
+                        _fmt('lf_abs', "{:.2f}"),
+                        _fmt('lf_rel', "{:.2f}"),
+                        _fmt('lf_peak', "{:.4f}"),
+                        _fmt('lf_log', "{:.4f}"),
+                        _fmt('lf_norm', "{:.4f}")
+                    ))
+                # HF
                 if 'hf_abs' in extracted:
-                    print(f"  HF:  {extracted['hf_abs']:.2f} ms² ({extracted['hf_rel']:.2f}%) @ {extracted['hf_peak']:.4f} Hz")
+                    print("  HF_abs: {} ms², HF_rel: {} %, HF_peak: {} Hz, HF_log: {}, HF_norm: {}".format(
+                        _fmt('hf_abs', "{:.2f}"),
+                        _fmt('hf_rel', "{:.2f}"),
+                        _fmt('hf_peak', "{:.4f}"),
+                        _fmt('hf_log', "{:.4f}"),
+                        _fmt('hf_norm', "{:.4f}")
+                    ))
+                # LF/HF ratio
                 if 'lf_hf_ratio' in extracted:
-                    print(f"  LF/HF Ratio: {extracted['lf_hf_ratio']:.2f}")
-                # Print normalized relative powers if both LF and HF are present
+                    print("  lf_hf_ratio: {}".format(_fmt('lf_hf_ratio', "{:.2f}")))
+                # Normalized relative powers LF/(LF+HF) and HF/(LF+HF)
                 if 'fft_rel_lf' in extracted and 'fft_rel_hf' in extracted:
-                    print(f"  LF/(LF+HF): {extracted['fft_rel_lf']:.2f}%")
-                    print(f"  HF/(LF+HF): {extracted['fft_rel_hf']:.2f}%")
-                print(f"  Total Power: {extracted['total_power']:.2f} ms²")
+                    print("  fft_rel_lf (LF/(LF+HF) %): {}".format(_fmt('fft_rel_lf', "{:.2f}")))
+                    print("  fft_rel_hf (HF/(LF+HF) %): {}".format(_fmt('fft_rel_hf', "{:.2f}")))
+                # Total power
+                print("  total_power: {} ms²".format(_fmt('total_power', "{:.2f}")))
                 print()
             
             results_list.append(window_result)
